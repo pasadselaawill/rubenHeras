@@ -1,0 +1,186 @@
+---
+title: "Practical Machine Learning"
+author: "Rubén Heras García"
+date: "20 de abril de 2016"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+##Background
+
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement - a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. In this project, your goal will be to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. More information is available from the website here: http://groupware.les.inf.puc-rio.br/har (see the section on the Weight Lifting Exercise Dataset).
+
+##Data
+
+The training data for this project are available here:
+
+https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv
+
+The test data are available here:
+
+https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv
+
+The data for this project come from this source: http://groupware.les.inf.puc-rio.br/har. If you use the document you create for this class for any purpose please cite them as they have been very generous in allowing their data to be used for this kind of assignment.
+
+
+##What you should submit
+
+The goal of your project is to predict the manner in which they did the exercise. This is the "classe" variable in the training set. You may use any of the other variables to predict with. You should create a report describing how you built your model, how you used cross validation, what you think the expected out of sample error is, and why you made the choices you did. You will also use your prediction model to predict 20 different test cases.
+
+###Peer Review Portion
+
+Your submission for the Peer Review portion should consist of a link to a Github repo with your R markdown and compiled HTML file describing your analysis. Please constrain the text of the writeup to < 2000 words and the number of figures to be less than 5. It will make it easier for the graders if you submit a repo with a gh-pages branch so the HTML page can be viewed online (and you always want to make it easy on graders :-).
+
+###Course Project Prediction Quiz Portion
+
+Apply your machine learning algorithm to the 20 test cases available in the test data above and submit your predictions in appropriate format to the Course Project Prediction Quiz for automated grading.
+
+
+
+##Loading libraries
+
+```{r}
+library(caret)
+library(randomForest)
+library(e1071)
+```
+##Loading data
+
+```{r}
+rm(list = ls())
+if (!file.exists("pml-training.csv")) {
+    trainUrl <- "http://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+    download.file(trainUrl, destfile = "pml-training.csv")
+}
+if (!file.exists("pml-testing.csv")) {
+  testUrl <- "http://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+  download.file(testUrl, destfile = "pml-testing.csv")
+}
+dataTesting <- read.csv("pml-testing.csv", sep = ",", na.strings = c("NA","#DIV/0!",""))
+dataTraining <- read.csv("pml-training.csv", sep = ",", na.strings = c("NA","#DIV/0!",""))
+```
+
+###Size of data
+```{r}
+dim(dataTraining)
+dim(dataTesting)
+```
+
+##Cleaning data
+
+Remove columns without relevan information
+```{r}
+dataTesting <- subset( dataTesting, select = -c(X : num_window))
+dataTraining <- subset( dataTraining, select = -c(X : num_window ))
+```
+###Size of data
+Check the new size
+```{r}
+dim(dataTesting)
+dim(dataTraining)
+```
+
+Remove columns empty or with too many NA values in data testing
+```{r}
+dataTesting <- dataTesting[,!apply(dataTesting, 2, function(x) all(gsub(" ", "", x)=="", na.rm=TRUE))]
+
+```
+
+Remove same columns in data training except the column "classe"
+```{r}
+colNamesTraining <- colnames(dataTraining)
+colNamesTesting <- colnames(dataTesting)
+for(i in length(colNamesTraining):1) {
+  delete <- TRUE
+  for(j in 1:length(colNamesTesting)) {
+    if(colNamesTesting[j] == colNamesTraining[i] || colNamesTraining[i] == "classe"){
+      delete <- FALSE
+      break
+    }         
+  }
+  if(delete){
+    dataTraining <- dataTraining[ , -i]
+  }
+}
+```
+
+###Size of data
+```{r}
+dim(dataTesting)
+dim(dataTraining)
+```
+
+##Detecting strong correlations and treatment
+Remove variables that are strongly correlated. Consider strong correlation if it is equal or greater than 0.9 .
+```{r}
+last <- as.numeric(ncol(dataTraining))
+penultimate <- last - 1
+
+for (i in 1:penultimate) {
+  dataTraining[,i] <- as.numeric(dataTraining[,i])
+  dataTesting[,i] <- as.numeric(dataTesting[,i])
+}
+
+strong_correlations <- findCorrelation(cor(dataTraining[, -c(last)]), cutoff=0.9)
+
+dataTraining <- dataTraining[, -strong_correlations]
+dataTesting <- dataTesting[, -strong_correlations]
+```
+
+##Before to train the model, preprocessing features
+To normalize the features, it's used knnImpute, center and scale. The normalization usually helps to the model to distinguess better how to select the most important features to get the different decissions to clasification.
+```{r}
+last <- as.numeric(ncol(dataTraining))
+
+knn_center_scale <-preProcess(dataTraining[,-c(last)],method=c('knnImpute', 'center', 'scale'))
+dataPreprocesed <- predict(knn_center_scale, dataTraining[,-c(last)])
+dataPreprocesed$classe <- dataTraining$classe
+
+valPreprocesed <-predict(knn_center_scale,dataTesting[,-c(last)])
+valPreprocesed$problem_id <- dataTesting$problem_id
+```
+
+##Train the model
+Create training and testing partitions from the data. After trained with Random Forest Model
+```{r}
+inTrain <- createDataPartition(y=dataPreprocesed$classe, p=0.7, list=FALSE )
+training <- dataPreprocesed[inTrain,]
+testing <- dataPreprocesed[-inTrain,]
+
+# set seed
+set.seed(12345)
+
+last <- as.numeric(ncol(training))
+
+# get the best mtry
+bestmtry <- tuneRF(training[,-c(last)],training$classe, ntreeTry=100, 
+                   stepFactor=1.5, trace=TRUE, plot=TRUE, dobest=FALSE)
+
+mtry <- bestmtry[as.numeric(which.min(bestmtry[,"OOBError"])),"mtry"]
+
+#Random Forest training
+rdf <-randomForest(classe~.,data=training, mtry=mtry, ntree=501, 
+                      keep.forest=TRUE, proximity=TRUE, 
+                      importance=TRUE,test=testing)
+```
+
+##Acuraccy results
+
+Trying to see, how accuraccy the model is. Realize that although the training has am accuraccy of 1, acuraccy of the testing sample is 0.99. It seems that there is no overfitting, and it fits well.
+```{r}
+pred_training <- predict(rdf, newdata = training)
+postResample(pred_training, training$classe)
+pred_testing <- predict(rdf, newdata = testing)
+postResample(pred_testing, testing$classe)
+```
+
+##Predictions for results
+Finally use the validation of twenty registers to predict the results.
+```{r}
+results<-predict(rdf,valPreprocesed)
+results
+```
+
